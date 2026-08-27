@@ -21,7 +21,9 @@ The approved Offer/Receipt extension already addresses signer authorization and 
 
 The proof no longer treats verifier artifacts as opaque placeholder digests.
 
-`fixtures/sar-conflict.json` contains three real Ed25519-signed SAR v0.1 conformance receipts. The proof follows the frozen SAR v0.1 integration contract:
+`fixtures/sar-conflict.json` contains three cryptographically real SAR v0.1 conformance receipts signed by three independent Ed25519 **test** keys. They follow the frozen SAR v0.1 signed-core/signature contract but are not production Default Settlement Verifier attestations and do not claim production-registry provenance.
+
+The proof follows the frozen SAR v0.1 integration contract:
 
 ```text
 core = task_id_hash + verdict + confidence + reason_code + ts + verifier_kid
@@ -29,7 +31,7 @@ receipt_id = SHA256(JCS(core))
 sig = Ed25519(SHA256(JCS(core)))
 ```
 
-Two receipts come from distinct verifier keys, bind to the same `task_id_hash`, and carry conflicting native verdicts (`PASS` and `FAIL`). The proof verifies both native signatures and receipt IDs before resolution. A tampered native receipt is rejected. A third independently signed SAR receipt binds to the narrowed successor subject.
+Two receipts come from distinct verifier keys, bind to the same `task_id_hash`, and carry conflicting native verdicts (`PASS` and `FAIL`). The proof verifies both native signatures and receipt IDs against the fixture's explicit test-key registry before resolution. A tampered native receipt is rejected. A third independently signed SAR receipt binds to the narrowed successor subject.
 
 No new verifier receipt format or verdict vocabulary is introduced.
 
@@ -77,8 +79,8 @@ The fixture consumes upstream evidence rather than reimplementing it:
 -> resolution lineage
 ```
 
-The proof deliberately does not verify EIP-3009/RPC settlement, Offer/Receipt signatures, delivery signatures, or anchoring. Those belong to the upstream artifacts it references. It does verify the native SAR receipts because native verifier disagreement is the boundary under test.
+The proof deliberately does not verify EIP-3009/RPC settlement, Offer/Receipt signatures, delivery signatures, or anchoring. Those belong to the upstream artifacts it references. It does verify the SAR-format conformance receipts because native verifier disagreement is the boundary under test.
 
 ## Proposed upstream question
 
-Is there value in a small application-layer resolution-lineage envelope that consumes existing native verifier receipts, preserves conflicting independently signed artifacts separately, records how the conflict changes the operative resolution state, and makes correction/supersession append-only without defining another payment, delivery, dispute, or verifier-verdict format?
+Is there value in a small application-layer resolution-lineage envelope that consumes existing native verifier receipt formats, preserves conflicting independently signed artifacts separately, records how the conflict changes the operative resolution state, and makes correction/supersession append-only without defining another payment, delivery, dispute, or verifier-verdict format?
