@@ -2,7 +2,7 @@
 
 Standalone reference proof for the narrow resolution-layer delta that remains after subtracting current x402 payment, receipt, delivery, verifier, and dispute work.
 
-The proof no longer presents itself as another receipt format. It consumes existing evidence primitives and demonstrates only:
+The proof does not define another receipt or verifier format. It consumes existing evidence and demonstrates only:
 
 1. **Individually attributable multi-verifier disagreement** on the same subject.
 2. **Resolution-state transitions** above native verifier verdicts.
@@ -12,17 +12,23 @@ The proof no longer presents itself as another receipt format. It consumes exist
 
 This repository does not claim novelty for x402 settlement, signed offers/receipts, historical signer authorization, operation binding, request/response hashing, delivery proof/status, generic verifier verdicts, generic dispute/re-checking, hash chaining, countersignatures, canonical envelope digests, Merkle/EAS anchoring, or reputation scoring.
 
-The reference fixture instead consumes:
+The reference fixture consumes:
 
 ```text
-#1921 operationDigest
+#1921-style operationDigest
 + approved offer/receipt evidence
 + #2833-compatible delivery evidence
-+ independently verifiable native verifier artifacts
++ verified native SAR receipt_ids[]
 -> resolution lineage
 ```
 
 SAR already covers generic `PASS / FAIL / INDETERMINATE` verifier receipts. #2887 already covers signed hash-chained claims, counter-evidence, and independent re-checking. This proof stays above those layers.
+
+## Native verifier proof
+
+`x402/fixtures/sar-conflict.json` contains three cryptographically real Ed25519 SAR v0.1 conformance receipts using three independent public keys.
+
+Two bind to the exact same subject and disagree natively (`PASS` vs `FAIL`). The proof recomputes their SAR `receipt_id` values, verifies their Ed25519 signatures, rejects a tampered receipt, and only then feeds their native receipt IDs into the lineage layer. A third signed SAR receipt supports the narrower successor subject.
 
 ## Reference implementation
 
@@ -35,7 +41,7 @@ cd x402
 npm test
 ```
 
-The fixture demonstrates a `SURVIVED -> UNRESOLVED -> NARROWED` lineage. Two independent verifier artifacts disagree on the same original subject; a later successor narrows the claim; every prior resolution remains signed, addressable, and independently valid. Mutating historical state invalidates the signature instead of rewriting history.
+The fixture demonstrates `SURVIVED -> UNRESOLVED -> NARROWED`. The conflicting native verifier artifacts remain separately addressable; the later narrowed resolution explicitly supersedes the prior resolution without deleting or mutating it. Mutating historical state invalidates the resolution signature.
 
 ## Provenance
 
