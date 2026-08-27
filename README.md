@@ -1,16 +1,28 @@
-# x402 Resolution Receipt
+# x402 Resolution Lineage
 
-Standalone reference repository for a durable resolution layer around x402 evidence.
+Standalone reference proof for the narrow resolution-layer delta that remains after subtracting current x402 payment, receipt, delivery, verifier, and dispute work.
 
-The core idea is simple: preserve the economic event and its evidence, allow independent verifiers to bind conclusions to exact rules and evidence, and let later conclusions supersede earlier ones without deleting history.
+The proof no longer presents itself as another receipt format. It consumes existing evidence primitives and demonstrates only:
 
-The `/x402` reference implementation demonstrates three narrowly scoped primitives:
+1. **Individually attributable multi-verifier disagreement** on the same subject.
+2. **Resolution-state transitions** above native verifier verdicts.
+3. **Append-only correction/supersession lineage** that never erases the earlier signed resolution.
 
-1. **Issuance-time signer authority evidence** that remains verifiable after current DID/DNS key state changes.
-2. **Signed independent verifier findings** bound to verifier identity, ruleset, evidence root, result, reason, and observation time.
-3. **Non-erasing correction links** that preserve earlier signed conclusions while allowing later findings to supersede them.
+## Explicitly upstream
 
-This repository does not claim novelty for x402 payment settlement, delivery receipts, request/response hashing, countersignatures, canonical envelope digests, Merkle/EAS anchoring, or reputation scoring.
+This repository does not claim novelty for x402 settlement, signed offers/receipts, historical signer authorization, operation binding, request/response hashing, delivery proof/status, generic verifier verdicts, generic dispute/re-checking, hash chaining, countersignatures, canonical envelope digests, Merkle/EAS anchoring, or reputation scoring.
+
+The reference fixture instead consumes:
+
+```text
+#1921 operationDigest
++ approved offer/receipt evidence
++ #2833-compatible delivery evidence
++ independently verifiable native verifier artifacts
+-> resolution lineage
+```
+
+SAR already covers generic `PASS / FAIL / INDETERMINATE` verifier receipts. #2887 already covers signed hash-chained claims, counter-evidence, and independent re-checking. This proof stays above those layers.
 
 ## Reference implementation
 
@@ -23,15 +35,15 @@ cd x402
 npm test
 ```
 
-The proof consumes an x402 v2 `exact` flow and demonstrates a `SURVIVED -> FAILED` correction chain while preserving the original signed resolution.
+The fixture demonstrates a `SURVIVED -> UNRESOLVED -> NARROWED` lineage. Two independent verifier artifacts disagree on the same original subject; a later successor narrows the claim; every prior resolution remains signed, addressable, and independently valid. Mutating historical state invalidates the signature instead of rewriting history.
 
 ## Provenance
 
-This standalone repository separates the x402 reference implementation from the earlier Technocore proof environment. The prior artifact and history remain preserved at:
+Earlier implementation history remains preserved at:
 
 https://github.com/chugarchugarr/resolution-receipt-technocore
 
-The separation changes presentation, not provenance.
+This subtraction changes the contribution claim, not the provenance of the work.
 
 ## Status
 
