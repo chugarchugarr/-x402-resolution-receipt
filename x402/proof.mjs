@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign, verify } from "node:crypto";
 
-const STATES = ["SURVIVED", "NARROWED", "FAILED", "UNRESOLVED"];
-const T0 = 1787749200;
+const STATES = ["SURVIVED", "UNRESOLVED", "NARROWED", "FAILED"];
+const T0 = 1787868000;
 
 function canon(v) {
   if (v === null || typeof v !== "object") return JSON.stringify(v);
@@ -15,96 +15,167 @@ function pub(k) { return k.export({format:"der",type:"spki"}).toString("base64ur
 function sig(k,v) { return sign(null, Buffer.from(canon(v)), k).toString("base64url"); }
 function check(k,v,s) { return verify(null, Buffer.from(canon(v)), k, Buffer.from(s,"base64url")); }
 
-// One x402 v2 exact-payment path. This proof consumes settlement; it does not reimplement EIP-3009/RPC validation.
-const paymentRequired = {
-  x402Version: 2,
-  resource: { url:"https://api.example.com/premium-data", mimeType:"application/json" },
-  accepts: [{ scheme:"exact", network:"eip155:84532", amount:"10000", asset:"0x036CbD53842c5426634e7929541eC2318f3dCF7e", payTo:"0x209693Bc6afc0C5328bA36FaF03C514EF312287C", maxTimeoutSeconds:60 }],
-  extensions: {}
+// Upstream primitives are consumed, not reimplemented.
+// #1921 supplies the operation-bound digest shape.
+const operation = {
+  operationId: "premiumData.get",
+  method: "GET",
+  pathTemplate: "/premium-data",
+  pathParams: {},
+  query: { symbol: "ETH" },
+  body: null,
+  policyVersion: "1"
 };
-const paymentPayload = {
-  x402Version: 2,
-  resource: paymentRequired.resource,
-  accepted: paymentRequired.accepts[0],
-  payload: { signature:`0x${"11".repeat(65)}`, authorization:{ from:"0x857b06519E91e3A54538791bDbb0E22373e36b66", to:paymentRequired.accepts[0].payTo, value:"10000", validAfter:String(T0), validBefore:String(T0+60), nonce:`0x${"22".repeat(32)}` } },
-  extensions: {}
-};
-const settlementResponse = { success:true, transaction:`0x${"33".repeat(32)}`, network:"eip155:84532", payer:paymentPayload.payload.authorization.from, amount:"10000", extensions:{} };
+const operationDigest = digest(operation);
 
-function exactBinding() {
-  const r = paymentRequired.accepts[0], a = paymentPayload.accepted, x = paymentPayload.payload.authorization;
-  return paymentRequired.x402Version === 2 && paymentPayload.x402Version === 2 &&
-    a.scheme === "exact" && ["network","amount","asset","payTo","maxTimeoutSeconds"].every(k => String(a[k]) === String(r[k])) &&
-    x.to === r.payTo && x.value === r.amount && settlementResponse.success && settlementResponse.network === r.network && settlementResponse.payer === x.from && settlementResponse.amount === r.amount;
+// Offer/Receipt and #2833 delivery evidence are opaque, independently verifiable inputs here.
+// Their internal signatures, settlement checks, request/response hashing, and anchoring are out of scope.
+const upstreamEvidence = {
+  operationDigest,
+  offerReceiptDigest: digest({ scheme: "offer-receipt", artifact: "signed-receipt-fixture" }),
+  deliveryReceiptDigest: digest({ scheme: "delivery-receipt", artifact: "signed-delivery-fixture" })
+};
+
+const originalSubject = {
+  operationDigest,
+  claimDigest: digest({ claim: "The paid operation returned a complete ETH price observation." })
+};
+const originalSubjectDigest = digest(originalSubject);
+
+// Verifier artifacts are treated as opaque signed outputs from their native verifier formats (e.g. SAR).
+// This layer does not define PASS/FAIL/INDETERMINATE or another generic verifier verdict vocabulary.
+function verifierArtifact(verifierId, subjectDigest, position, observedAt) {
+  return {
+    verifierId,
+    subjectDigest,
+    artifactDigest: digest({ verifierId, subjectDigest, position, observedAt }),
+    positionDigest: digest(position),
+    observedAt
+  };
 }
-assert.equal(exactBinding(), true);
 
-// 1) Preserve issuance-time authority evidence rather than depending on current mutable DID/DNS state.
-const authority = keypair();
-const issuanceSigner = keypair();
-const rotatedSigner = keypair();
-const authorityPayload = {
-  type:"x402-resolution-authority/v1",
-  service:paymentRequired.resource.url,
-  signerKeyId:"did:web:api.example.com#receipt-2026-08",
-  signerPublicKey:pub(issuanceSigner.publicKey),
-  observedAt:T0,
-  validFrom:T0-60,
-  validUntil:T0+86400,
-  source:{ method:"did:web", locator:"did:web:api.example.com", documentDigest:digest({verificationMethod:[pub(issuanceSigner.publicKey)]}) }
-};
-const authorityEvidence = { ...authorityPayload, proof:{ authorityPublicKey:pub(authority.publicKey), signature:sig(authority.privateKey, authorityPayload) } };
-const currentDid = { verificationMethod:[pub(rotatedSigner.publicKey)] }; // issuance key is gone after rotation
-assert.notEqual(currentDid.verificationMethod[0], authorityEvidence.signerPublicKey);
-assert.equal(check(authority.publicKey, authorityPayload, authorityEvidence.proof.signature), true);
+const verifierA = verifierArtifact(
+  "independent-A",
+  originalSubjectDigest,
+  { conclusion: "supports-original-claim", basis: "delivery-artifact-v1" },
+  T0 + 10
+);
+const verifierB = verifierArtifact(
+  "independent-B",
+  originalSubjectDigest,
+  { conclusion: "challenges-completeness", basis: "semantic-policy-v2" },
+  T0 + 20
+);
 
-const evidence = {
-  x402:{ paymentRequiredDigest:digest(paymentRequired), paymentPayloadDigest:digest(paymentPayload), settlementResponseDigest:digest(settlementResponse) },
-  execution:{ requestDigest:digest({method:"GET",url:"/premium-data?symbol=ETH"}), responseDigest:digest({status:200,body:{symbol:"ETH",price:"4600.00"}}) },
-  authorityEvidence
-};
-const evidenceRoot = digest(evidence);
-const receiptId = digest({ evidenceRoot, transaction:settlementResponse.transaction });
-
-// 2) Preserve independently signed verifier findings. Four states are reference semantics, not mandatory x402 policy.
-function finding(verifierId, keys, ruleset, result, reason, observedAt) {
-  assert.ok(STATES.includes(result));
-  const payload = { type:"x402-resolution-verification/v1", verifierId, verifierPublicKey:pub(keys.publicKey), rulesetDigest:digest(ruleset), evidenceRoot, result, reason, observedAt };
-  return { ...payload, signature:sig(keys.privateKey,payload) };
+function materialDisagreement(a, b) {
+  return a.verifierId !== b.verifierId &&
+    a.subjectDigest === b.subjectDigest &&
+    a.positionDigest !== b.positionDigest;
 }
-const verifierA = keypair();
-const f0 = finding("independent-A", verifierA, {checks:["exact-binding","issuance-authority","response-digest"]}, "SURVIVED", "Replay passed under ruleset v1.", T0+10);
-const {signature:f0sig,...f0payload}=f0;
-assert.equal(check(verifierA.publicKey,f0payload,f0sig),true);
+assert.equal(materialDisagreement(verifierA, verifierB), true);
 
-// 3) Corrections are append-only: a new conclusion links to, but never overwrites, the old one.
 const resolver = keypair();
-function resolution(sequence, previousResolutionId, findings, state, correctionReason, issuedAt) {
-  const payload = { type:"x402-resolution-receipt/v1", receiptId, evidenceRoot, sequence, previousResolutionId, findingDigests:findings.map(digest), state, correctionReason, issuedAt, resolverPublicKey:pub(resolver.publicKey) };
+function resolution({ sequence, subjectDigest, evidence, verifierArtifacts, state, previousResolutionId = null, supersedesResolutionId = null, supersedesSubjectDigest = null, correctionReason = null, issuedAt }) {
+  assert.ok(STATES.includes(state));
+  const payload = {
+    type: "x402-resolution-lineage/v1",
+    sequence,
+    subjectDigest,
+    evidenceRoot: digest(evidence),
+    verifierArtifactDigests: verifierArtifacts.map(v => v.artifactDigest),
+    state,
+    previousResolutionId,
+    supersedesResolutionId,
+    supersedesSubjectDigest,
+    correctionReason,
+    issuedAt,
+    resolverPublicKey: pub(resolver.publicKey)
+  };
   const resolutionId = digest(payload);
-  return { ...payload, resolutionId, signature:sig(resolver.privateKey,{...payload,resolutionId}), findings };
+  return { ...payload, resolutionId, signature: sig(resolver.privateKey, { ...payload, resolutionId }) };
 }
 function validResolution(r) {
-  const {signature,findings,...signed}=r;
-  const {resolutionId,...payload}=signed;
-  return resolutionId === digest(payload) && check(resolver.publicKey,signed,signature) && canon(r.findingDigests) === canon(findings.map(digest));
+  const { signature, resolutionId, ...payload } = r;
+  return resolutionId === digest(payload) &&
+    check(resolver.publicKey, { ...payload, resolutionId }, signature);
 }
-const r0 = resolution(0,null,[f0],"SURVIVED",null,T0+11);
-const f1 = finding("independent-A", verifierA, {checks:["exact-binding","issuance-authority","response-preimage"]}, "FAILED", "Later audit found the retained response preimage does not match the committed digest.", T0+3600);
-const {signature:f1sig,...f1payload}=f1;
-assert.equal(check(verifierA.publicKey,f1payload,f1sig),true);
-const r1 = resolution(1,r0.resolutionId,[f1],"FAILED","Superseding audit result; r0 remains immutable.",T0+3601);
-assert.equal(validResolution(r0),true);
-assert.equal(validResolution(r1),true);
-assert.equal(r1.previousResolutionId,r0.resolutionId);
-assert.equal(r0.state,"SURVIVED");
-assert.equal(r1.state,"FAILED");
+
+// 1) One verifier supports the original subject.
+const r0 = resolution({
+  sequence: 0,
+  subjectDigest: originalSubjectDigest,
+  evidence: upstreamEvidence,
+  verifierArtifacts: [verifierA],
+  state: "SURVIVED",
+  issuedAt: T0 + 11
+});
+
+// 2) A second independent verifier reaches a materially different position on the same subject.
+// The new operative state becomes UNRESOLVED without mutating r0.
+const disagreementEvidence = { ...upstreamEvidence, verifierArtifacts: [verifierA.artifactDigest, verifierB.artifactDigest] };
+const r1 = resolution({
+  sequence: 1,
+  subjectDigest: originalSubjectDigest,
+  evidence: disagreementEvidence,
+  verifierArtifacts: [verifierA, verifierB],
+  state: "UNRESOLVED",
+  previousResolutionId: r0.resolutionId,
+  supersedesResolutionId: r0.resolutionId,
+  correctionReason: "Independent verifier artifacts disagree on the same subject.",
+  issuedAt: T0 + 21
+});
+
+// 3) Later evidence supports a narrower successor claim. The original subject is not rewritten.
+const narrowedSubject = {
+  parentSubjectDigest: originalSubjectDigest,
+  operationDigest,
+  claimDigest: digest({ claim: "The paid operation returned an ETH price value; completeness is not asserted." })
+};
+const narrowedSubjectDigest = digest(narrowedSubject);
+const verifierC = verifierArtifact(
+  "independent-C",
+  narrowedSubjectDigest,
+  { conclusion: "supports-narrowed-claim", basis: "replay-policy-v3" },
+  T0 + 3600
+);
+const narrowedEvidence = { ...upstreamEvidence, priorDisagreementResolutionId: r1.resolutionId, verifierArtifact: verifierC.artifactDigest };
+const r2 = resolution({
+  sequence: 2,
+  subjectDigest: narrowedSubjectDigest,
+  evidence: narrowedEvidence,
+  verifierArtifacts: [verifierC],
+  state: "NARROWED",
+  previousResolutionId: r1.resolutionId,
+  supersedesResolutionId: r1.resolutionId,
+  supersedesSubjectDigest: originalSubjectDigest,
+  correctionReason: "Later evidence supports only a narrower successor subject.",
+  issuedAt: T0 + 3601
+});
+
+for (const r of [r0, r1, r2]) assert.equal(validResolution(r), true);
+assert.equal(r1.previousResolutionId, r0.resolutionId);
+assert.equal(r1.supersedesResolutionId, r0.resolutionId);
+assert.equal(r2.previousResolutionId, r1.resolutionId);
+assert.equal(r2.supersedesResolutionId, r1.resolutionId);
+assert.equal(r2.supersedesSubjectDigest, originalSubjectDigest);
+assert.deepEqual([r0.state, r1.state, r2.state], ["SURVIVED", "UNRESOLVED", "NARROWED"]);
+
+// Mutation of a historical resolution breaks its signature; history is corrected by successor records only.
+const mutatedR0 = { ...r0, state: "FAILED" };
+assert.equal(validResolution(mutatedR0), false);
+assert.equal(validResolution(r0), true);
 
 console.log(JSON.stringify({
-  exactPaymentBinding:true,
-  historicalAuthoritySurvivesRotation:true,
-  signedIndependentFinding:true,
-  originalResolution:{id:r0.resolutionId,state:r0.state},
-  correction:{id:r1.resolutionId,state:r1.state,previousResolutionId:r1.previousResolutionId},
-  correctionChainValid:r1.previousResolutionId===r0.resolutionId
-},null,2));
+  consumedUpstream: {
+    operationBinding: "#1921 operationDigest",
+    offerReceipt: true,
+    deliveryReceipt: "#2833-compatible evidence reference",
+    verifierVerdictFormat: "external/native"
+  },
+  multiVerifierDisagreement: materialDisagreement(verifierA, verifierB),
+  transition: [r0.state, r1.state, r2.state],
+  lineage: [r0.resolutionId, r1.resolutionId, r2.resolutionId],
+  originalResolutionStillValid: validResolution(r0),
+  historicalMutationRejected: !validResolution(mutatedR0),
+  narrowedSubjectPreservesParent: r2.supersedesSubjectDigest === originalSubjectDigest
+}, null, 2));
