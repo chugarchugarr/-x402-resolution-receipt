@@ -1,0 +1,58 @@
+{
+  "format": "SAR v0.1 conformance fixtures",
+  "keys": [
+    {
+      "kid": "sar-test-independent-a",
+      "alg": "Ed25519",
+      "public_key_spki_base64url": "MCowBQYDK2VwAyEAJnG9Hl4bO_n8UmvldhdsVR5bNyYypar9fRnFFnGI3fk"
+    },
+    {
+      "kid": "sar-test-independent-b",
+      "alg": "Ed25519",
+      "public_key_spki_base64url": "MCowBQYDK2VwAyEAtmo4uWkrtfqDT_aAE3YtZ2EDq2Jz_4eZc5ZI9Ou2Nyg"
+    },
+    {
+      "kid": "sar-test-independent-c",
+      "alg": "Ed25519",
+      "public_key_spki_base64url": "MCowBQYDK2VwAyEAyC_RhAqjtK6L3EmN4P31n3pR-5kzHIo9ILozeDKe3gE"
+    }
+  ],
+  "receipts": {
+    "original_support": {
+      "task_id_hash": "sha256:13d8cc0a7b19f0645af6ad31a7ac1b14a3d02d064225ef09cc7235b25161d142",
+      "verdict": "PASS",
+      "confidence": 0.98,
+      "reason_code": "SPEC_MATCH",
+      "ts": "2026-08-27T15:40:10.000000Z",
+      "verifier_kid": "sar-test-independent-a",
+      "receipt_id": "sha256:fae4b4d07ef277214e8df5fb317c8ff47e2e587a4ed88eab432ded4d315374e7",
+      "sig_alg": "Ed25519",
+      "sig": "base64url:92xwvI6POJEU9MoIARW0e7z299cs5zUgRzknsvj0zMJRn0b0VqaNFlJwnv1TwN0QMQ62o6XOd9iUMXcxzvG1Dw",
+      "_ext": {}
+    },
+    "original_challenge": {
+      "task_id_hash": "sha256:13d8cc0a7b19f0645af6ad31a7ac1b14a3d02d064225ef09cc7235b25161d142",
+      "verdict": "FAIL",
+      "confidence": 0.97,
+      "reason_code": "SPEC_MISMATCH",
+      "ts": "2026-08-27T15:40:20.000000Z",
+      "verifier_kid": "sar-test-independent-b",
+      "receipt_id": "sha256:0bc091f1d6d00f177b637f97e80ac324765315abf0e1aebbd3ae883575d124ce",
+      "sig_alg": "Ed25519",
+      "sig": "base64url:DKQhwIpzkruoE1VdhIUmQ5MndsFJnY7EYYKU5SdWsjBxgJI9kSw7hUNVQ6jnXJydGSZvXXXVZAJmuDoTTmtsCA",
+      "_ext": {}
+    },
+    "narrowed_support": {
+      "task_id_hash": "sha256:0294fddeb15ba6d3cd72a7cc1f87a879060acf1d51c1c982614b3bffb0ec4b5b",
+      "verdict": "PASS",
+      "confidence": 0.99,
+      "reason_code": "SPEC_MATCH",
+      "ts": "2026-08-27T16:40:00.000000Z",
+      "verifier_kid": "sar-test-independent-c",
+      "receipt_id": "sha256:139cf42bc9c13c2759f3ebaee9cb18ca527c30d9e1efdf21737e6292b8105a02",
+      "sig_alg": "Ed25519",
+      "sig": "base64url:lfWcAtLTAP3qxdQN_Tluq0Hv2pWjeNdU1MEAL0rqO6b8L0dCNR9atp2Lf52W8OybE-KOs5n2c7XZOyb1tf-sAg",
+      "_ext": {}
+    }
+  }
+}

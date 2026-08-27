@@ -1,110 +1,199 @@
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync, sign, verify } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
+import { readFileSync } from "node:fs";
 
-const STATES = ["SURVIVED", "NARROWED", "FAILED", "UNRESOLVED"];
-const T0 = 1787749200;
+const STATES = ["SURVIVED", "UNRESOLVED", "NARROWED", "FAILED"];
+const T0 = 1787868000;
 
 function canon(v) {
   if (v === null || typeof v !== "object") return JSON.stringify(v);
   if (Array.isArray(v)) return `[${v.map(canon).join(",")}]`;
   return `{${Object.keys(v).sort().map(k => `${JSON.stringify(k)}:${canon(v[k])}`).join(",")}}`;
 }
-function digest(v) { return `sha256:${createHash("sha256").update(canon(v)).digest("hex")}`; }
+function digestBytes(v) { return createHash("sha256").update(canon(v)).digest(); }
+function digest(v) { return `sha256:${digestBytes(v).toString("hex")}`; }
 function keypair() { return generateKeyPairSync("ed25519"); }
 function pub(k) { return k.export({format:"der",type:"spki"}).toString("base64url"); }
 function sig(k,v) { return sign(null, Buffer.from(canon(v)), k).toString("base64url"); }
 function check(k,v,s) { return verify(null, Buffer.from(canon(v)), k, Buffer.from(s,"base64url")); }
 
-// One x402 v2 exact-payment path. This proof consumes settlement; it does not reimplement EIP-3009/RPC validation.
-const paymentRequired = {
-  x402Version: 2,
-  resource: { url:"https://api.example.com/premium-data", mimeType:"application/json" },
-  accepts: [{ scheme:"exact", network:"eip155:84532", amount:"10000", asset:"0x036CbD53842c5426634e7929541eC2318f3dCF7e", payTo:"0x209693Bc6afc0C5328bA36FaF03C514EF312287C", maxTimeoutSeconds:60 }],
-  extensions: {}
+// Upstream primitives are consumed, not reimplemented.
+const operation = {
+  operationId: "premiumData.get",
+  method: "GET",
+  pathTemplate: "/premium-data",
+  pathParams: {},
+  query: { symbol: "ETH" },
+  body: null,
+  policyVersion: "1"
 };
-const paymentPayload = {
-  x402Version: 2,
-  resource: paymentRequired.resource,
-  accepted: paymentRequired.accepts[0],
-  payload: { signature:`0x${"11".repeat(65)}`, authorization:{ from:"0x857b06519E91e3A54538791bDbb0E22373e36b66", to:paymentRequired.accepts[0].payTo, value:"10000", validAfter:String(T0), validBefore:String(T0+60), nonce:`0x${"22".repeat(32)}` } },
-  extensions: {}
+const operationDigest = digest(operation); // #1921-style operation binding
+const upstreamEvidence = {
+  operationDigest,
+  offerReceiptDigest: digest({ scheme: "offer-receipt", artifact: "signed-receipt-fixture" }),
+  deliveryReceiptDigest: digest({ scheme: "delivery-receipt", artifact: "signed-delivery-fixture" })
 };
-const settlementResponse = { success:true, transaction:`0x${"33".repeat(32)}`, network:"eip155:84532", payer:paymentPayload.payload.authorization.from, amount:"10000", extensions:{} };
 
-function exactBinding() {
-  const r = paymentRequired.accepts[0], a = paymentPayload.accepted, x = paymentPayload.payload.authorization;
-  return paymentRequired.x402Version === 2 && paymentPayload.x402Version === 2 &&
-    a.scheme === "exact" && ["network","amount","asset","payTo","maxTimeoutSeconds"].every(k => String(a[k]) === String(r[k])) &&
-    x.to === r.payTo && x.value === r.amount && settlementResponse.success && settlementResponse.network === r.network && settlementResponse.payer === x.from && settlementResponse.amount === r.amount;
+const originalSubject = {
+  operationDigest,
+  claimDigest: digest({ claim: "The paid operation returned a complete ETH price observation." })
+};
+const originalSubjectDigest = digest(originalSubject);
+
+const narrowedSubject = {
+  parentSubjectDigest: originalSubjectDigest,
+  operationDigest,
+  claimDigest: digest({ claim: "The paid operation returned an ETH price value; completeness is not asserted." })
+};
+const narrowedSubjectDigest = digest(narrowedSubject);
+
+// Frozen SAR v0.1 integration contract:
+// signed core = task_id_hash + verdict + confidence + reason_code + ts + verifier_kid
+// receipt_id = sha256(JCS(core)); signature = Ed25519(sha256(JCS(core))).
+const sarFixtures = JSON.parse(readFileSync(new URL("./fixtures/sar-conflict.json", import.meta.url), "utf8"));
+function sarCore(r) {
+  return {
+    task_id_hash: r.task_id_hash,
+    verdict: r.verdict,
+    confidence: r.confidence,
+    reason_code: r.reason_code,
+    ts: r.ts,
+    verifier_kid: r.verifier_kid
+  };
 }
-assert.equal(exactBinding(), true);
-
-// 1) Preserve issuance-time authority evidence rather than depending on current mutable DID/DNS state.
-const authority = keypair();
-const issuanceSigner = keypair();
-const rotatedSigner = keypair();
-const authorityPayload = {
-  type:"x402-resolution-authority/v1",
-  service:paymentRequired.resource.url,
-  signerKeyId:"did:web:api.example.com#receipt-2026-08",
-  signerPublicKey:pub(issuanceSigner.publicKey),
-  observedAt:T0,
-  validFrom:T0-60,
-  validUntil:T0+86400,
-  source:{ method:"did:web", locator:"did:web:api.example.com", documentDigest:digest({verificationMethod:[pub(issuanceSigner.publicKey)]}) }
-};
-const authorityEvidence = { ...authorityPayload, proof:{ authorityPublicKey:pub(authority.publicKey), signature:sig(authority.privateKey, authorityPayload) } };
-const currentDid = { verificationMethod:[pub(rotatedSigner.publicKey)] }; // issuance key is gone after rotation
-assert.notEqual(currentDid.verificationMethod[0], authorityEvidence.signerPublicKey);
-assert.equal(check(authority.publicKey, authorityPayload, authorityEvidence.proof.signature), true);
-
-const evidence = {
-  x402:{ paymentRequiredDigest:digest(paymentRequired), paymentPayloadDigest:digest(paymentPayload), settlementResponseDigest:digest(settlementResponse) },
-  execution:{ requestDigest:digest({method:"GET",url:"/premium-data?symbol=ETH"}), responseDigest:digest({status:200,body:{symbol:"ETH",price:"4600.00"}}) },
-  authorityEvidence
-};
-const evidenceRoot = digest(evidence);
-const receiptId = digest({ evidenceRoot, transaction:settlementResponse.transaction });
-
-// 2) Preserve independently signed verifier findings. Four states are reference semantics, not mandatory x402 policy.
-function finding(verifierId, keys, ruleset, result, reason, observedAt) {
-  assert.ok(STATES.includes(result));
-  const payload = { type:"x402-resolution-verification/v1", verifierId, verifierPublicKey:pub(keys.publicKey), rulesetDigest:digest(ruleset), evidenceRoot, result, reason, observedAt };
-  return { ...payload, signature:sig(keys.privateKey,payload) };
+function resolveSarKey(kid) {
+  const entry = sarFixtures.keys.find(k => k.kid === kid && k.alg === "Ed25519");
+  assert.ok(entry, `unknown SAR verifier_kid: ${kid}`);
+  return createPublicKey({
+    key: Buffer.from(entry.public_key_spki_base64url, "base64url"),
+    format: "der",
+    type: "spki"
+  });
 }
-const verifierA = keypair();
-const f0 = finding("independent-A", verifierA, {checks:["exact-binding","issuance-authority","response-digest"]}, "SURVIVED", "Replay passed under ruleset v1.", T0+10);
-const {signature:f0sig,...f0payload}=f0;
-assert.equal(check(verifierA.publicKey,f0payload,f0sig),true);
+function verifySar(r) {
+  assert.equal(r.sig_alg, "Ed25519");
+  assert.ok(["PASS", "FAIL", "INDETERMINATE"].includes(r.verdict));
+  const core = sarCore(r);
+  const coreDigest = digestBytes(core);
+  assert.equal(r.receipt_id, `sha256:${coreDigest.toString("hex")}`);
+  const signature = Buffer.from(r.sig.replace(/^base64url:/, ""), "base64url");
+  assert.equal(verify(null, coreDigest, resolveSarKey(r.verifier_kid), signature), true);
+  return {
+    verifierId: r.verifier_kid,
+    subjectDigest: r.task_id_hash,
+    artifactDigest: r.receipt_id,
+    nativeVerdict: r.verdict,
+    nativeReasonCode: r.reason_code,
+    observedAt: r.ts
+  };
+}
 
-// 3) Corrections are append-only: a new conclusion links to, but never overwrites, the old one.
+const sarA = verifySar(sarFixtures.receipts.original_support);
+const sarB = verifySar(sarFixtures.receipts.original_challenge);
+const sarC = verifySar(sarFixtures.receipts.narrowed_support);
+assert.equal(sarA.subjectDigest, originalSubjectDigest);
+assert.equal(sarB.subjectDigest, originalSubjectDigest);
+assert.equal(sarC.subjectDigest, narrowedSubjectDigest);
+
+function materialDisagreement(a, b) {
+  return a.verifierId !== b.verifierId &&
+    a.subjectDigest === b.subjectDigest &&
+    a.nativeVerdict !== b.nativeVerdict;
+}
+assert.equal(materialDisagreement(sarA, sarB), true);
+
+// Negative control: changing the native verdict invalidates receipt_id/signature verification.
+const tamperedSar = { ...sarFixtures.receipts.original_support, verdict: "FAIL" };
+assert.throws(() => verifySar(tamperedSar));
+
 const resolver = keypair();
-function resolution(sequence, previousResolutionId, findings, state, correctionReason, issuedAt) {
-  const payload = { type:"x402-resolution-receipt/v1", receiptId, evidenceRoot, sequence, previousResolutionId, findingDigests:findings.map(digest), state, correctionReason, issuedAt, resolverPublicKey:pub(resolver.publicKey) };
+function resolution({ sequence, subjectDigest, evidence, verifierArtifacts, state, previousResolutionId = null, supersedesResolutionId = null, supersedesSubjectDigest = null, correctionReason = null, issuedAt }) {
+  assert.ok(STATES.includes(state));
+  const payload = {
+    type: "x402-resolution-lineage/v1",
+    sequence,
+    subjectDigest,
+    evidenceRoot: digest(evidence),
+    verifierArtifactDigests: verifierArtifacts.map(v => v.artifactDigest),
+    state,
+    previousResolutionId,
+    supersedesResolutionId,
+    supersedesSubjectDigest,
+    correctionReason,
+    issuedAt,
+    resolverPublicKey: pub(resolver.publicKey)
+  };
   const resolutionId = digest(payload);
-  return { ...payload, resolutionId, signature:sig(resolver.privateKey,{...payload,resolutionId}), findings };
+  return { ...payload, resolutionId, signature: sig(resolver.privateKey, { ...payload, resolutionId }) };
 }
 function validResolution(r) {
-  const {signature,findings,...signed}=r;
-  const {resolutionId,...payload}=signed;
-  return resolutionId === digest(payload) && check(resolver.publicKey,signed,signature) && canon(r.findingDigests) === canon(findings.map(digest));
+  const { signature, resolutionId, ...payload } = r;
+  return resolutionId === digest(payload) &&
+    check(resolver.publicKey, { ...payload, resolutionId }, signature);
 }
-const r0 = resolution(0,null,[f0],"SURVIVED",null,T0+11);
-const f1 = finding("independent-A", verifierA, {checks:["exact-binding","issuance-authority","response-preimage"]}, "FAILED", "Later audit found the retained response preimage does not match the committed digest.", T0+3600);
-const {signature:f1sig,...f1payload}=f1;
-assert.equal(check(verifierA.publicKey,f1payload,f1sig),true);
-const r1 = resolution(1,r0.resolutionId,[f1],"FAILED","Superseding audit result; r0 remains immutable.",T0+3601);
-assert.equal(validResolution(r0),true);
-assert.equal(validResolution(r1),true);
-assert.equal(r1.previousResolutionId,r0.resolutionId);
-assert.equal(r0.state,"SURVIVED");
-assert.equal(r1.state,"FAILED");
+
+const r0 = resolution({
+  sequence: 0,
+  subjectDigest: originalSubjectDigest,
+  evidence: { ...upstreamEvidence, nativeVerifierReceipt: sarA.artifactDigest },
+  verifierArtifacts: [sarA],
+  state: "SURVIVED",
+  issuedAt: T0 + 11
+});
+
+const r1 = resolution({
+  sequence: 1,
+  subjectDigest: originalSubjectDigest,
+  evidence: { ...upstreamEvidence, nativeVerifierReceipts: [sarA.artifactDigest, sarB.artifactDigest] },
+  verifierArtifacts: [sarA, sarB],
+  state: "UNRESOLVED",
+  previousResolutionId: r0.resolutionId,
+  supersedesResolutionId: r0.resolutionId,
+  correctionReason: "Two independently signed SAR receipts disagree on the same task_id_hash.",
+  issuedAt: T0 + 21
+});
+
+const r2 = resolution({
+  sequence: 2,
+  subjectDigest: narrowedSubjectDigest,
+  evidence: { ...upstreamEvidence, priorDisagreementResolutionId: r1.resolutionId, nativeVerifierReceipt: sarC.artifactDigest },
+  verifierArtifacts: [sarC],
+  state: "NARROWED",
+  previousResolutionId: r1.resolutionId,
+  supersedesResolutionId: r1.resolutionId,
+  supersedesSubjectDigest: originalSubjectDigest,
+  correctionReason: "A later independently signed SAR supports only the narrower successor subject.",
+  issuedAt: T0 + 3601
+});
+
+for (const r of [r0, r1, r2]) assert.equal(validResolution(r), true);
+assert.deepEqual([r0.state, r1.state, r2.state], ["SURVIVED", "UNRESOLVED", "NARROWED"]);
+assert.equal(r1.previousResolutionId, r0.resolutionId);
+assert.equal(r1.supersedesResolutionId, r0.resolutionId);
+assert.equal(r2.previousResolutionId, r1.resolutionId);
+assert.equal(r2.supersedesResolutionId, r1.resolutionId);
+assert.equal(r2.supersedesSubjectDigest, originalSubjectDigest);
+
+const mutatedR0 = { ...r0, state: "FAILED" };
+assert.equal(validResolution(mutatedR0), false);
+assert.equal(validResolution(r0), true);
 
 console.log(JSON.stringify({
-  exactPaymentBinding:true,
-  historicalAuthoritySurvivesRotation:true,
-  signedIndependentFinding:true,
-  originalResolution:{id:r0.resolutionId,state:r0.state},
-  correction:{id:r1.resolutionId,state:r1.state,previousResolutionId:r1.previousResolutionId},
-  correctionChainValid:r1.previousResolutionId===r0.resolutionId
-},null,2));
+  consumedUpstream: {
+    operationBinding: "#1921 operationDigest",
+    offerReceipt: true,
+    deliveryReceipt: "#2833-compatible evidence reference",
+    verifierFormat: "SAR v0.1 native signed receipts"
+  },
+  nativeVerifierReceiptsVerified: [sarA.artifactDigest, sarB.artifactDigest, sarC.artifactDigest],
+  independentVerifierKeys: sarA.verifierId !== sarB.verifierId,
+  sameOriginalSubject: sarA.subjectDigest === sarB.subjectDigest,
+  conflictingNativeVerdicts: [sarA.nativeVerdict, sarB.nativeVerdict],
+  tamperedNativeReceiptRejected: true,
+  multiVerifierDisagreement: materialDisagreement(sarA, sarB),
+  transition: [r0.state, r1.state, r2.state],
+  lineage: [r0.resolutionId, r1.resolutionId, r2.resolutionId],
+  originalResolutionStillValid: validResolution(r0),
+  historicalMutationRejected: !validResolution(mutatedR0),
+  narrowedSubjectPreservesParent: r2.supersedesSubjectDigest === originalSubjectDigest
+}, null, 2));

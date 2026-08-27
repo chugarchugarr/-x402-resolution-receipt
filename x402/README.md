@@ -1,22 +1,59 @@
-# x402 reference implementation
+# x402 resolution-lineage reference proof
 
-Minimal zero-dependency proof of the surviving resolution-layer delta after comparing x402 v2, the approved Offer/Receipt extension, #1921, and active delivery-receipt work.
+Minimal zero-dependency proof of the surviving resolution-layer delta after subtracting current x402 payment, receipt, delivery, verifier, and dispute work.
+
+## What this consumes
+
+This proof treats the following as upstream inputs rather than contributions:
+
+- #1921-style operation binding through `operationDigest`;
+- the approved Offer/Receipt extension;
+- #2833-compatible delivery evidence;
+- native verifier artifacts, demonstrated here with frozen SAR v0.1 receipts;
+- generic correctness/dispute re-checking represented by #2887.
+
+It does not reimplement settlement, delivery proofs, historical signer authority, generic verifier verdicts, request/response hashing, anchoring, or reputation.
+
+## Native verifier fixture
+
+`fixtures/sar-conflict.json` contains three cryptographically real SAR v0.1 **conformance fixtures** and three distinct Ed25519 test public keys.
+
+These are locally generated test-verifier receipts that follow the frozen SAR v0.1 signed-core and signature contract. They are **not** production attestations issued by Default Settlement Verifier and do not claim production-registry provenance. The property under test is that the lineage layer can consume independently signed native-format verifier artifacts without defining a replacement verifier format.
+
+Two receipts bind to the exact same `task_id_hash` / resolution subject but disagree natively:
+
+```text
+verifier A -> PASS / SPEC_MATCH
+verifier B -> FAIL / SPEC_MISMATCH
+```
+
+The proof recomputes each SAR `receipt_id` from the frozen SAR v0.1 canonical signed core and verifies each Ed25519 signature against the fixture's explicit test-key registry before the lineage layer consumes the artifact. A tampered native verdict is rejected before resolution logic runs.
+
+A third independently signed SAR receipt binds to the narrowed successor subject so the complete lineage consumes native verifier artifacts end-to-end.
 
 ## What remains
 
-Existing x402 work already covers or is actively covering signed offers/receipts, operation/request binding, response fingerprints, settlement verification, countersignatures, canonical envelope digests, Merkle inclusion, anchoring, delivery status, and verifier metadata.
+Only three behaviors remain in the proof:
 
-This proof therefore adds only:
+1. **Multi-verifier disagreement preservation** — independently attributable, independently verified native receipts can address the same subject and disagree without being flattened into one synthetic verifier verdict.
+2. **Resolution-state transition** — accumulated evidence changes the higher-level resolution state. The fixture demonstrates `SURVIVED -> UNRESOLVED -> NARROWED`.
+3. **Immutable correction/supersession lineage** — successor resolutions explicitly link to what they supersede while the earlier signed resolution remains valid and addressable.
 
-1. **Issuance-time authority evidence** — carry/reference durable evidence that the receipt signing key was authorized when issued, so later DID/DNS key rotation does not make historical verification depend on current mutable state.
-2. **Signed independent verifier findings** — bind `verifierId + rulesetDigest + evidenceRoot + result + reason + observedAt` in a verifier signature. The demo uses `SURVIVED / NARROWED / FAILED / UNRESOLVED` as reference semantics; x402 need not standardize those policy labels.
-3. **Append-only corrections** — a later resolution links `previousResolutionId` instead of overwriting the earlier signed conclusion.
+The four resolution-state labels are not a replacement for SAR's `PASS / FAIL / INDETERMINATE` verifier vocabulary.
 
 ## Boundary
 
-The proof consumes an x402 v2 `exact` `PaymentRequired -> PaymentPayload -> SettlementResponse` path. It does **not** reimplement EIP-3009 signature validation, balance checking, simulation, or blockchain settlement.
+The proof consumes evidence references in this shape:
 
-It does **not** claim novelty for delivery receipts themselves. The contribution surface is the durable resolution layer above already-verifiable payment/delivery evidence.
+```text
+operationDigest
++ offerReceiptDigest
++ deliveryReceiptDigest
++ verified native SAR receipt_ids[]
+-> signed resolution lineage
+```
+
+A historical resolution cannot be edited in place: mutation breaks its signature. A correction is represented by a new signed successor carrying `previousResolutionId` and `supersedesResolutionId`; a narrowed claim additionally carries `supersedesSubjectDigest`.
 
 ## Run
 
@@ -24,8 +61,18 @@ It does **not** claim novelty for delivery receipts themselves. The contribution
 npm test
 ```
 
-Expected: all assertions pass and the program prints a `SURVIVED -> FAILED` correction chain whose second resolution points to the first, while issuance-time authority still verifies after simulated key rotation.
+Expected output confirms:
+
+- all three native-format SAR conformance signatures verify against the explicit test-key registry;
+- the two original-subject receipts use independent verifier keys;
+- both bind to the same subject;
+- their native verdicts conflict (`PASS` vs `FAIL`);
+- a tampered SAR receipt is rejected;
+- the resolution transitions `SURVIVED -> UNRESOLVED -> NARROWED`;
+- the original signed resolution still verifies;
+- mutating the original resolution fails verification;
+- the narrowed successor preserves the original subject digest in lineage.
 
 ## Provenance
 
-This implementation was first developed in the `x402-resolution-receipt` branch of `chugarchugarr/resolution-receipt-technocore`. That history remains intact. This repository is the standalone canonical presentation of the x402 reference proof.
+This implementation was first developed in `chugarchugarr/resolution-receipt-technocore`. That history remains intact. This repository is the standalone canonical presentation of the reduced x402 resolution-lineage proof.
