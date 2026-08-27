@@ -16,7 +16,9 @@ It does not reimplement settlement, delivery proofs, historical signer authority
 
 ## Native verifier fixture
 
-`fixtures/sar-conflict.json` contains three cryptographically real SAR v0.1 conformance fixtures and three distinct Ed25519 public keys.
+`fixtures/sar-conflict.json` contains three cryptographically real SAR v0.1 **conformance fixtures** and three distinct Ed25519 test public keys.
+
+These are locally generated test-verifier receipts that follow the frozen SAR v0.1 signed-core and signature contract. They are **not** production attestations issued by Default Settlement Verifier and do not claim production-registry provenance. The property under test is that the lineage layer can consume independently signed native-format verifier artifacts without defining a replacement verifier format.
 
 Two receipts bind to the exact same `task_id_hash` / resolution subject but disagree natively:
 
@@ -25,7 +27,7 @@ verifier A -> PASS / SPEC_MATCH
 verifier B -> FAIL / SPEC_MISMATCH
 ```
 
-The proof recomputes each SAR `receipt_id` from the frozen SAR v0.1 canonical signed core and verifies each Ed25519 signature before the lineage layer consumes the artifact. A tampered native verdict is rejected before resolution logic runs.
+The proof recomputes each SAR `receipt_id` from the frozen SAR v0.1 canonical signed core and verifies each Ed25519 signature against the fixture's explicit test-key registry before the lineage layer consumes the artifact. A tampered native verdict is rejected before resolution logic runs.
 
 A third independently signed SAR receipt binds to the narrowed successor subject so the complete lineage consumes native verifier artifacts end-to-end.
 
@@ -61,7 +63,7 @@ npm test
 
 Expected output confirms:
 
-- all three native SAR signatures verify;
+- all three native-format SAR conformance signatures verify against the explicit test-key registry;
 - the two original-subject receipts use independent verifier keys;
 - both bind to the same subject;
 - their native verdicts conflict (`PASS` vs `FAIL`);
